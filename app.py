@@ -59,6 +59,28 @@ def validate_filename(filename):
     pattern = r"^\d{2}-\d{2}-\d{4}\+.+\+.+\.xlsx$"
     return re.match(pattern, filename)
 
+# Función para validar la fecha del archivo
+def validate_file_date(filename):
+    try:
+        file_date_str = filename.split('+')[0]
+        file_date = datetime.strptime(file_date_str, '%d-%m-%Y')
+        now = datetime.now()
+        current_month = now.month
+        current_year = now.year
+
+        # Check if the file date is from the current month, more than two months prior, or a future month
+        if (file_date.year == current_year and file_date.month == current_month) or \
+           (file_date.year == current_year and file_date.month > current_month) or \
+           (file_date.year > current_year) or \
+           (file_date.year == current_year and file_date.month < current_month - 1) or \
+           (file_date.year == current_year - 1 and current_month in [1, 2] and file_date.month < 12 - (1 - current_month)):
+            return False
+
+        return True
+    except Exception as e:
+        st.error(f"Error al validar la fecha del archivo: {e}")
+        return False
+
 # Extraer el nombre del líder del archivo
 def extract_leader_name(filename):
     try:
@@ -268,6 +290,8 @@ def process_sheets_until_empty(excel_data, filename, upload_datetime):
             processed_data = clean_and_restructure_until_empty(sheet_data, cargo, cuil, segmento, area_influencia, leader_name, fecha, sucursal, filename, upload_datetime, sheet_name, comisiones_accesorias, hs_extras_50, hs_extras_100, incentivo_productividad, ajuste_incentivo)
             if processed_data.empty:
                 return pd.DataFrame(), False  # Return empty DataFrame and error state
+            if not validate_update_dates(processed_data, filename, sheet_name):
+                return pd.DataFrame(), False  # Return empty DataFrame and error state
             dataframes.append(processed_data)
             final_data = pd.concat([final_data, processed_data], ignore_index=True)
     
@@ -282,16 +306,70 @@ def process_sheets_until_empty(excel_data, filename, upload_datetime):
 # Función para determinar si el tablero es "Ajuste" o "Normal"
 def determine_tablero_type(fecha, upload_datetime):
     fecha_tablero = datetime.strptime(fecha, '%d-%m-%Y')
-    limite_normal = fecha_tablero + timedelta(days=50)  # 20 días del mes siguiente
-    if upload_datetime > limite_normal:
+    ajuste_fecha = datetime.strptime('21/03/2025', '%d/%m/%Y')  # Ingresar la fecha de ajuste aquí
+    if upload_datetime > ajuste_fecha:
         return "Ajuste"
     return "Normal"
+
+# Función para verificar fechas en la columna "Ultima Fecha de Actualización"
+def validate_update_dates(data, filename, sheet_name):
+    try:
+        argentina_tz = pytz.timezone("America/Argentina/Buenos_Aires")
+        now = datetime.now(argentina_tz)
+        now = pd.to_datetime(now.strftime('%Y-%m-%d'))  # Convertir la fecha actual al mismo tipo de datos
+        data['Ultima Fecha de Actualización'] = pd.to_datetime(data['Ultima Fecha de Actualización'], format='%d/%m/%Y', errors='coerce')
+        invalid_dates = data[data['Ultima Fecha de Actualización'] > now]
+        if not invalid_dates.empty:
+            error_message = f"Error: Existen fechas en la columna 'Ultima Fecha de Actualización' en la hoja '{sheet_name}' que son posteriores a la fecha actual."
+            st.error(error_message)
+            log_error_to_s3(error_message, filename)
+            return False
+        return True
+    except KeyError:
+        error_message = f"Error: La columna 'Ultima Fecha de Actualización' no existe en la hoja '{sheet_name}'."
+        st.error(error_message)
+        log_error_to_s3(error_message, filename)
+        return False
+    except Exception as e:
+        error_message = f"Error al validar las fechas en la columna 'Ultima Fecha de Actualización' en la hoja '{sheet_name}': {e}"
+        st.error(error_message)
+        log_error_to_s3(error_message, filename)
+        return False
+
+# Función para verificar duplicados en S3
+def check_for_duplicates(cuil, fecha, leader_name):
+    try:
+        cuil = str(cuil)
+        fecha = str(fecha)
+        response = s3.list_objects_v2(Bucket=bucket_name)
+        if 'Contents' in response:
+            for obj in response['Contents']:
+                obj_key = obj['Key']
+                obj_data = s3.get_object(Bucket=bucket_name, Key=obj_key)
+                df = pd.read_csv(BytesIO(obj_data['Body'].read()))
+                if 'CUIL' in df.columns and 'Fecha_Nombre_Archivo' in df.columns:
+                    df['CUIL'] = df['CUIL'].astype(str)
+                    df['Fecha_Nombre_Archivo'] = df['Fecha_Nombre_Archivo'].astype(str)
+                    if not df.empty and df['CUIL'].str.contains(cuil).any() and df['Fecha_Nombre_Archivo'].str.contains(fecha).any():
+                        existing_leader = df.loc[df['CUIL'] == cuil, 'Nombre Lider'].values[0]
+                        if existing_leader != leader_name:
+                            return True, existing_leader, cuil  # Block upload if the leader is different
+        return False, None, None
+    except Exception as e:
+        st.error(f"Error al verificar duplicados en S3: {e}")
+        return False, None, None
 
 # Función para procesar y subir el Excel
 def process_and_upload_excel(file, original_filename):
     try:
         if not validate_filename(original_filename):
             error_message = "El nombre del archivo no cumple con el formato requerido (dd-mm-aaaa+empresa+nombre lider.xlsx)."
+            st.error(error_message)
+            log_error_to_s3(error_message, original_filename)
+            return
+
+        if not validate_file_date(original_filename):
+            error_message = "La fecha del nombre del archivo solo puede ser del mes anterior al actual."
             st.error(error_message)
             log_error_to_s3(error_message, original_filename)
             return
@@ -314,7 +392,21 @@ def process_and_upload_excel(file, original_filename):
             log_error_to_s3(error_message, original_filename)
             return
 
+        # Verificar duplicados
+        cuil = cleaned_df['CUIL'].iloc[0]
         fecha, _ = extract_date_and_sucursal(original_filename)
+        leader_name = cleaned_df['Nombre Lider'].iloc[0]
+        is_duplicate, existing_leader, duplicate_cuil = check_for_duplicates(cuil, fecha, leader_name)
+        if is_duplicate:
+            error_message = f"No se puede subir el archivo porque el líder '{existing_leader}' ya lo subió anteriormente. El CUIL duplicado es '{duplicate_cuil}'."
+            st.error(error_message)
+            log_error_to_s3(error_message, original_filename)
+            return
+
+        # Contar la cantidad de CUILs únicos
+        unique_cuils_count = cleaned_df['CUIL'].nunique()
+        st.info(f"Se subieron {unique_cuils_count} tableros.")
+
         upload_datetime_obj = datetime.strptime(upload_datetime, '%d/%m/%Y_%H:%M:%S')
         tablero_type = determine_tablero_type(fecha, upload_datetime_obj)
         ajuste_value = "SI" if tablero_type == "Ajuste" else "NO"
