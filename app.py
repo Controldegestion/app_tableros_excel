@@ -116,6 +116,43 @@ def validate_form_cells(sheet_data, sheet_name, filename):
             log_error_to_s3(error_message, filename)
             return False
 
+        # Validar que los campos de comisiones y horas extra sean números
+        comisiones_accesorias = sheet_data.at[0, 10]
+        hs_extras_50 = sheet_data.at[1, 10]
+        hs_extras_100 = sheet_data.at[2, 10]
+        incentivo_productividad = sheet_data.at[3, 10]
+        ajuste_incentivo = sheet_data.at[4, 10]
+
+        if not isinstance(comisiones_accesorias, (int, float)) or not float(comisiones_accesorias).is_integer():
+            error_message = f"Error: La celda K1 en la hoja '{sheet_name}' debe contener un número entero."
+            st.error(error_message)
+            log_error_to_s3(error_message, filename)
+            return False
+
+        if not isinstance(hs_extras_50, (int, float)):
+            error_message = f"Error: La celda K2 en la hoja '{sheet_name}' debe contener solo números."
+            st.error(error_message)
+            log_error_to_s3(error_message, filename)
+            return False
+
+        if not isinstance(hs_extras_100, (int, float)):
+            error_message = f"Error: La celda K3 en la hoja '{sheet_name}' debe contener solo números."
+            st.error(error_message)
+            log_error_to_s3(error_message, filename)
+            return False
+
+        if not isinstance(incentivo_productividad, (int, float)) or not float(incentivo_productividad).is_integer():
+            error_message = f"Error: La celda K4 en la hoja '{sheet_name}' debe contener un número entero."
+            st.error(error_message)
+            log_error_to_s3(error_message, filename)
+            return False
+
+        if not isinstance(ajuste_incentivo, (int, float)) or not float(ajuste_incentivo).is_integer():
+            error_message = f"Error: La celda K5 en la hoja '{sheet_name}' debe contener un número entero."
+            st.error(error_message)
+            log_error_to_s3(error_message, filename)
+            return False
+
         return True
     except Exception as e:
         error_message = f"Error al validar las celdas del formulario en la hoja '{sheet_name}': {e}"
