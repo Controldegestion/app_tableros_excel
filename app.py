@@ -343,7 +343,7 @@ def process_sheets_until_empty(excel_data, filename, upload_datetime):
 # Función para determinar si el tablero es "Ajuste" o "Normal"
 def determine_tablero_type(fecha, upload_datetime):
     fecha_tablero = datetime.strptime(fecha, '%d-%m-%Y')
-    ajuste_fecha = datetime.strptime('21/04/2025', '%d/%m/%Y')  # Ingresar la fecha de ajuste aquí
+    ajuste_fecha = datetime.strptime('22/04/2025', '%d/%m/%Y')  # Ingresar la fecha de ajuste aquí
     if upload_datetime > ajuste_fecha:
         return "Ajuste"
     return "Normal"
@@ -354,19 +354,40 @@ def validate_update_dates(data, filename, sheet_name):
         argentina_tz = pytz.timezone("America/Argentina/Buenos_Aires")
         now = datetime.now(argentina_tz)
         now = pd.to_datetime(now.strftime('%Y-%m-%d'))  # Convertir la fecha actual al mismo tipo de datos
-        data['Ultima Fecha de Actualización'] = pd.to_datetime(data['Ultima Fecha de Actualización'], format='%d/%m/%Y', errors='coerce')
+
+        # Verificar si la columna existe
+        if 'Ultima Fecha de Actualización' not in data.columns:
+            error_message = f"Error: La columna 'Ultima Fecha de Actualización' no existe en la hoja '{sheet_name}'."
+            st.error(error_message)
+            log_error_to_s3(error_message, filename)
+            return False
+
+        # Verificar valores nulos
+        if data['Ultima Fecha de Actualización'].isna().any():
+            error_message = f"Error: Existen valores nulos en la columna 'Ultima Fecha de Actualización' en la hoja '{sheet_name}'."
+            st.error(error_message)
+            log_error_to_s3(error_message, filename)
+            return False
+
+        # Verificar formato de fecha
+        data['Ultima Fecha de Actualización'] = pd.to_datetime(
+            data['Ultima Fecha de Actualización'], format='%d/%m/%Y', errors='coerce'
+        )
+        if data['Ultima Fecha de Actualización'].isna().any():
+            error_message = f"Error: Existen valores en la columna 'Ultima Fecha de Actualización' en la hoja '{sheet_name}' que no tienen el formato de fecha válido (%d/%m/%Y)."
+            st.error(error_message)
+            log_error_to_s3(error_message, filename)
+            return False
+
+        # Verificar fechas futuras
         invalid_dates = data[data['Ultima Fecha de Actualización'] > now]
         if not invalid_dates.empty:
             error_message = f"Error: Existen fechas en la columna 'Ultima Fecha de Actualización' en la hoja '{sheet_name}' que son posteriores a la fecha actual."
             st.error(error_message)
             log_error_to_s3(error_message, filename)
             return False
+
         return True
-    except KeyError:
-        error_message = f"Error: La columna 'Ultima Fecha de Actualización' no existe en la hoja '{sheet_name}'."
-        st.error(error_message)
-        log_error_to_s3(error_message, filename)
-        return False
     except Exception as e:
         error_message = f"Error al validar las fechas en la columna 'Ultima Fecha de Actualización' en la hoja '{sheet_name}': {e}"
         st.error(error_message)
