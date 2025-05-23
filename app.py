@@ -266,6 +266,52 @@ def clean_and_restructure_until_empty(data, cargo, cuil, segmento, area_influenc
             log_error_to_s3(error_message, filename)
             return pd.DataFrame()
 
+        # Validar que los objetivos sean numéricos (entero, decimal o porcentaje)
+        objetivo_cols = [
+            'Objetivo Aceptable (70%)',
+            'Objetivo Muy Bueno (90%)',
+            'Objetivo Excelente (120%)'
+        ]
+        for col in objetivo_cols:
+            # Intentar convertir a numérico, si falla o hay texto, marcar error
+            def is_valid_objetivo(x):
+                if pd.isna(x) or isinstance(x, (int, float)):
+                    return True
+                if isinstance(x, str):
+                    return bool(re.match(r"^\s*-?\d+(\.\d+)?\s*%?\s*$", x))
+                return False
+            invalid_mask = ~data[col].apply(is_valid_objetivo)
+            if invalid_mask.any():
+                error_message = (f"Error: La columna '{col}' contiene valores no numéricos o texto en la hoja '{sheet_name}'.")
+                st.error(error_message)
+                log_error_to_s3(error_message, filename)
+                return pd.DataFrame()
+            # Convertir strings con % o números a float
+            def parse_objetivo(val):
+                if pd.isna(val):
+                    return val
+                if isinstance(val, (int, float)):
+                    return float(val)
+                if isinstance(val, str):
+                    val = val.strip().replace(",", ".")
+                    if val.endswith("%"):
+                        try:
+                            return float(val.rstrip("%").strip()) / 100
+                        except:
+                            return None
+                    try:
+                        return float(val)
+                    except:
+                        return None
+                return None
+            data[col] = data[col].apply(parse_objetivo)
+            # Si después de convertir hay algún valor que NO sea numérico y NO sea nulo, es error
+            if not data[col].dropna().apply(lambda x: isinstance(x, float)).all():
+                error_message = (f"Error: La columna '{col}' contiene valores no numéricos válidos en la hoja '{sheet_name}'.")
+                st.error(error_message)
+                log_error_to_s3(error_message, filename)
+                return pd.DataFrame()
+
         if not validate_ponderacion(data, filename):
             return pd.DataFrame()
 
@@ -343,7 +389,7 @@ def process_sheets_until_empty(excel_data, filename, upload_datetime):
 # Función para determinar si el tablero es "Ajuste" o "Normal"
 def determine_tablero_type(fecha, upload_datetime):
     fecha_tablero = datetime.strptime(fecha, '%d-%m-%Y')
-    ajuste_fecha = datetime.strptime('20/05/2025', '%d/%m/%Y')  # Ingresar la fecha de ajuste aquí
+    ajuste_fecha = datetime.strptime('23/04/2025', '%d/%m/%Y')  # Ingresar la fecha de ajuste aquí
     if upload_datetime > ajuste_fecha:
         return "Ajuste"
     return "Normal"
