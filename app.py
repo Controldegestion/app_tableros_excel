@@ -82,7 +82,7 @@ def validate_file_date(filename):
         two_months_ago = current_month - 2 if current_month > 2 else 12 + (current_month - 2)
         two_months_ago_year = current_year if current_month > 2 else current_year - 1
         # Dia mes actual para ajuste
-        if (file_date.year == two_months_ago_year and file_date.month == two_months_ago and now.day <= 27):
+        if (file_date.year == two_months_ago_year and file_date.month == two_months_ago and now.day <= 10):
             return True
 
         return False
