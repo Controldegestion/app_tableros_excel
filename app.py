@@ -81,7 +81,8 @@ def validate_file_date(filename):
         # Dos meses atrás, solo hasta el día 10 del mes actual
         two_months_ago = current_month - 2 if current_month > 2 else 12 + (current_month - 2)
         two_months_ago_year = current_year if current_month > 2 else current_year - 1
-        if (file_date.year == two_months_ago_year and file_date.month == two_months_ago and now.day <= 10):
+        # Dia mes actual para ajuste
+        if (file_date.year == two_months_ago_year and file_date.month == two_months_ago and now.day <= 27):
             return True
 
         return False
@@ -472,8 +473,10 @@ def validate_update_dates(data, filename, sheet_name):
 def check_for_duplicates(cuil, fecha, leader_name):
     try:
         cuil = str(cuil)
-        fecha = str(fecha)
-        response = s3.list_objects_v2(Bucket=bucket_name)
+        # Normalizar la fecha a "01-MM-YYYY" para buscar en la carpeta correcta
+        fecha_carpeta = normalize_fecha_to_first_day(fecha)
+        prefix = f"{fecha_carpeta}/"
+        response = s3.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
         if 'Contents' in response:
             for obj in response['Contents']:
                 obj_key = obj['Key']
@@ -527,8 +530,9 @@ def process_and_upload_excel(file, original_filename):
         # Verificar duplicados
         cuil = cleaned_df['CUIL'].iloc[0]
         fecha, _ = extract_date_and_sucursal(original_filename)
+        fecha_normalizada = normalize_fecha_to_first_day(fecha)
         leader_name = cleaned_df['Nombre Lider'].iloc[0]
-        is_duplicate, existing_leader, duplicate_cuil = check_for_duplicates(cuil, fecha, leader_name)
+        is_duplicate, existing_leader, duplicate_cuil = check_for_duplicates(cuil, fecha_normalizada, leader_name)
         if is_duplicate:
             error_message = f"No se puede subir el archivo porque el líder '{existing_leader}' ya lo subió anteriormente. El CUIL duplicado es '{duplicate_cuil}'."
             st.error(error_message)
@@ -554,10 +558,13 @@ def process_and_upload_excel(file, original_filename):
             if not guardar:
                 return
 
+        # Extraer la fecha del archivo (ej: "03-04-2025" o "01-04-2025")
+        fecha_archivo = original_filename.split('+')[0]
+        fecha_carpeta = normalize_fecha_to_first_day(fecha_archivo)
+        csv_filename = f"{fecha_carpeta}/{now.strftime('%Y-%m-%d_%H-%M-%S')}_{original_filename.split('.')[0]}.csv"
+
         csv_buffer = BytesIO()
         cleaned_df.to_csv(csv_buffer, index=False, encoding="utf-8-sig")
-
-        csv_filename = f"{now.strftime('%Y-%m-%d_%H-%M-%S')}_{original_filename.split('.')[0]}.csv"
 
         csv_buffer.seek(0)
         upload_file_to_s3(csv_buffer, csv_filename, original_filename)
@@ -566,6 +573,14 @@ def process_and_upload_excel(file, original_filename):
         st.error(error_message)
         log_error_to_s3(error_message, original_filename)
 
+def normalize_fecha_to_first_day(fecha_str):
+    """Convierte cualquier fecha dd-mm-aaaa a 01-mm-aaaa"""
+    try:
+        dt = datetime.strptime(fecha_str, "%d-%m-%Y")
+        return dt.replace(day=1).strftime("%d-%m-%Y")
+    except Exception:
+        return fecha_str  # Si falla, devuelve la original
+    
 # Función principal de la aplicación
 def main():
     st.title("Gestión de Tableros")
