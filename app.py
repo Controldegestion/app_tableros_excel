@@ -81,8 +81,8 @@ def validate_file_date(filename):
         # Dos meses atrás, solo hasta el día 10 del mes actual
         two_months_ago = current_month - 2 if current_month > 2 else 12 + (current_month - 2)
         two_months_ago_year = current_year if current_month > 2 else current_year - 1
-        # Dia mes actual para ajuste
-        if (file_date.year == two_months_ago_year and file_date.month == two_months_ago and now.day <= 10):
+        # Configuracion Ajuste
+        if (file_date.year == two_months_ago_year and file_date.month == two_months_ago and now.day <= 27):
             return True
 
         return False
@@ -481,14 +481,19 @@ def check_for_duplicates(cuil, fecha, leader_name):
             for obj in response['Contents']:
                 obj_key = obj['Key']
                 obj_data = s3.get_object(Bucket=bucket_name, Key=obj_key)
-                df = pd.read_csv(BytesIO(obj_data['Body'].read()))
-                if 'CUIL' in df.columns and 'Fecha_Nombre_Archivo' in df.columns:
-                    df['CUIL'] = df['CUIL'].astype(str)
-                    df['Fecha_Nombre_Archivo'] = df['Fecha_Nombre_Archivo'].astype(str)
-                    if not df.empty and df['CUIL'].str.contains(cuil).any() and df['Fecha_Nombre_Archivo'].str.contains(fecha).any():
-                        existing_leader = df.loc[df['CUIL'] == cuil, 'Nombre Lider'].values[0]
-                        if existing_leader != leader_name:
-                            return True, existing_leader, cuil  # Block upload if the leader is different
+                try:
+                    df = pd.read_csv(BytesIO(obj_data['Body'].read()))
+                except Exception:
+                    # Si el archivo no es un CSV válido, lo ignora
+                    continue
+                if df.empty or 'CUIL' not in df.columns or 'Fecha_Nombre_Archivo' not in df.columns:
+                    continue
+                df['CUIL'] = df['CUIL'].astype(str)
+                df['Fecha_Nombre_Archivo'] = df['Fecha_Nombre_Archivo'].astype(str)
+                if not df.empty and df['CUIL'].str.contains(cuil).any() and df['Fecha_Nombre_Archivo'].str.contains(fecha).any():
+                    existing_leader = df.loc[df['CUIL'] == cuil, 'Nombre Lider'].values[0]
+                    if existing_leader != leader_name:
+                        return True, existing_leader, cuil  # Block upload if the leader is different
         return False, None, None
     except Exception as e:
         st.error(f"Error al verificar duplicados en S3: {e}")
@@ -504,7 +509,7 @@ def process_and_upload_excel(file, original_filename):
             return
 
         if not validate_file_date(original_filename):
-            error_message = "La fecha del nombre del archivo solo puede ser del mes actual, anterior o de dos meses atrás (hasta el día 10)."
+            error_message = "La fecha del nombre del archivo solo puede ser de un mes anterior, o de dos meses atrás (hasta el día 10)."
             st.error(error_message)
             log_error_to_s3(error_message, original_filename)
             return
