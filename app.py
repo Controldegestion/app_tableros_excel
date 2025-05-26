@@ -68,15 +68,23 @@ def validate_file_date(filename):
         current_month = now.month
         current_year = now.year
 
-        # Check if the file date is from the current month, more than two months prior, or a future month
-        if (file_date.year == current_year and file_date.month == current_month) or \
-           (file_date.year == current_year and file_date.month > current_month) or \
-           (file_date.year > current_year) or \
-           (file_date.year == current_year and file_date.month < current_month - 1) or \
-           (file_date.year == current_year - 1 and current_month in [1, 2] and file_date.month < 12 - (1 - current_month)):
+        # No aceptar archivos del mes actual
+        if file_date.year == current_year and file_date.month == current_month:
             return False
 
-        return True
+        # Mes anterior
+        prev_month = current_month - 1 if current_month > 1 else 12
+        prev_year = current_year if current_month > 1 else current_year - 1
+        if file_date.year == prev_year and file_date.month == prev_month:
+            return True
+
+        # Dos meses atrás, solo hasta el día 10 del mes actual
+        two_months_ago = current_month - 2 if current_month > 2 else 12 + (current_month - 2)
+        two_months_ago_year = current_year if current_month > 2 else current_year - 1
+        if (file_date.year == two_months_ago_year and file_date.month == two_months_ago and now.day <= 10):
+            return True
+
+        return False
     except Exception as e:
         st.error(f"Error al validar la fecha del archivo: {e}")
         return False
@@ -388,10 +396,30 @@ def process_sheets_until_empty(excel_data, filename, upload_datetime):
 
 # Función para determinar si el tablero es "Ajuste" o "Normal"
 def determine_tablero_type(fecha, upload_datetime):
-    fecha_tablero = datetime.strptime(fecha, '%d-%m-%Y')
-    ajuste_fecha = datetime.strptime('23/04/2025', '%d/%m/%Y')  # Ingresar la fecha de ajuste aquí
-    if upload_datetime > ajuste_fecha:
+    # Fecha de ajuste
+    ajuste_fecha = datetime.strptime('23/05/2025', '%d/%m/%Y')
+    file_date = datetime.strptime(fecha, '%d-%m-%Y')
+    now = upload_datetime
+
+    # Mes actual
+    if file_date.month == now.month and file_date.year == now.year:
+        return "Normal"
+
+    # Mes anterior
+    prev_month = now.month - 1 if now.month > 1 else 12
+    prev_year = now.year if now.month > 1 else now.year - 1
+    if file_date.month == prev_month and file_date.year == prev_year:
+        if upload_datetime > ajuste_fecha:
+            return "Ajuste"
+        else:
+            return "Normal"
+
+    # Dos meses atrás (siempre ajuste)
+    two_months_ago = now.month - 2 if now.month > 2 else 12 + (now.month - 2)
+    two_months_ago_year = now.year if now.month > 2 else now.year - 1
+    if file_date.month == two_months_ago and file_date.year == two_months_ago_year:
         return "Ajuste"
+
     return "Normal"
 
 # Función para verificar fechas en la columna "Ultima Fecha de Actualización"
@@ -473,7 +501,7 @@ def process_and_upload_excel(file, original_filename):
             return
 
         if not validate_file_date(original_filename):
-            error_message = "La fecha del nombre del archivo solo puede ser del mes anterior al actual."
+            error_message = "La fecha del nombre del archivo solo puede ser del mes actual, anterior o de dos meses atrás (hasta el día 10)."
             st.error(error_message)
             log_error_to_s3(error_message, original_filename)
             return
