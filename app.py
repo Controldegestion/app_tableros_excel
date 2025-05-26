@@ -70,7 +70,7 @@ def validate_file_date(filename):
 
         # No aceptar archivos del mes actual
         if file_date.year == current_year and file_date.month == current_month:
-            return True
+            return False
 
         # Mes anterior
         prev_month = current_month - 1 if current_month > 1 else 12
@@ -473,10 +473,10 @@ def validate_update_dates(data, filename, sheet_name):
 def check_for_duplicates(cuil, fecha, leader_name):
     try:
         cuil = str(cuil)
+        # Normalizar la fecha a "01-MM-YYYY" para buscar en la carpeta correcta
         fecha_carpeta = normalize_fecha_to_first_day(fecha)
         prefix = f"{fecha_carpeta}/"
         response = s3.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
-        archivos_verificados = 0  # Contador de archivos verificados
         if 'Contents' in response:
             for obj in response['Contents']:
                 obj_key = obj['Key']
@@ -484,8 +484,8 @@ def check_for_duplicates(cuil, fecha, leader_name):
                 try:
                     df = pd.read_csv(BytesIO(obj_data['Body'].read()))
                 except Exception:
+                    # Si el archivo no es un CSV válido, lo ignora
                     continue
-                archivos_verificados += 1
                 if df.empty or 'CUIL' not in df.columns or 'Fecha_Nombre_Archivo' not in df.columns:
                     continue
                 df['CUIL'] = df['CUIL'].astype(str)
@@ -493,9 +493,7 @@ def check_for_duplicates(cuil, fecha, leader_name):
                 if not df.empty and df['CUIL'].str.contains(cuil).any() and df['Fecha_Nombre_Archivo'].str.contains(fecha).any():
                     existing_leader = df.loc[df['CUIL'] == cuil, 'Nombre Lider'].values[0]
                     if existing_leader != leader_name:
-                        st.info(f"Se verificaron {archivos_verificados} archivos CSV en S3 para buscar duplicados.")
                         return True, existing_leader, cuil  # Block upload if the leader is different
-        st.info(f"Se verificaron {archivos_verificados} archivos CSV en S3 para buscar duplicados.")
         return False, None, None
     except Exception as e:
         st.error(f"Error al verificar duplicados en S3: {e}")
