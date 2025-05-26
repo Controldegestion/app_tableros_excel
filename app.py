@@ -214,6 +214,9 @@ def verify_sheet_structure(sheet_data, sheet_name, filename):
 def extract_data_from_form(sheet_data):
     try:
         cargo = sheet_data.iloc[0, 1]
+        # Si cargo contiene una coma, lo envuelve entre comillas
+        if isinstance(cargo, str) and ',' in cargo:
+            cargo = f'"{cargo}"'
         cuil = sheet_data.iloc[1, 1]
         segmento = sheet_data.iloc[2, 1]
         area_influencia = sheet_data.iloc[3, 1]
