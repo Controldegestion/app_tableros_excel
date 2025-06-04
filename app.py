@@ -401,7 +401,7 @@ def process_sheets_until_empty(excel_data, filename, upload_datetime):
 # Función para determinar si el tablero es "Ajuste" o "Normal"
 def determine_tablero_type(fecha, upload_datetime):
     # Fecha de ajuste
-    ajuste_fecha = datetime.strptime('23/05/2025', '%d/%m/%Y')
+    ajuste_fecha = datetime.strptime('19/06/2025', '%d/%m/%Y')
     file_date = datetime.strptime(fecha, '%d-%m-%Y')
     now = upload_datetime
 
