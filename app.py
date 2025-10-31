@@ -2,10 +2,12 @@ import streamlit as st
 import boto3
 import pandas as pd
 from io import BytesIO
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 import re
 from config import cargar_configuracion
+from botocore.exceptions import ClientError
+from pandas.errors import EmptyDataError
 
 # Cargar configuración
 aws_access_key, aws_secret_key, region_name, bucket_name, valid_user, valid_password = cargar_configuracion()
@@ -18,13 +20,58 @@ s3 = boto3.client(
     region_name=region_name
 )
 
+# Key helper para el índice por período
+def _get_period_index_key(periodo_str):
+    """
+    Devuelve la key S3 del índice del período dentro de la carpeta del mes.
+    Ejemplo: periodo_str = '01-10-2025' -> '01-10-2025/indice.csv'
+    """
+    return f"{periodo_str}/indice.csv"
+
+def _load_period_index(periodo_str):
+    """
+    Lee el índice del período (Periodo/indice.csv).
+    Si no existe o está vacío, devuelve un DataFrame vacío con columnas estándar.
+    """
+    key = _get_period_index_key(periodo_str)
+    try:
+        obj = s3.get_object(Bucket=bucket_name, Key=key)
+        try:
+            df = pd.read_csv(BytesIO(obj["Body"].read()), dtype={"CUIL": str})
+        except EmptyDataError:
+            return pd.DataFrame(columns=["Periodo", "CUIL", "Lider"])
+
+        expected = ["Periodo", "CUIL", "Lider"]
+        for col in expected:
+            if col not in df.columns:
+                df[col] = None
+        df = df[expected]
+        return df
+    except ClientError as e:
+        code = e.response.get("Error", {}).get("Code")
+        if code in ("NoSuchKey", "404", "NoSuchBucket"):
+            return pd.DataFrame(columns=["Periodo", "CUIL", "Lider"])
+        raise
+
+def _save_period_index(df, periodo_str):
+    """
+    Guarda el DataFrame del índice en '<Periodo>/indice.csv'.
+    """
+    key = _get_period_index_key(periodo_str)
+    csv_buffer = BytesIO()
+    df.to_csv(csv_buffer, index=False, encoding="utf-8-sig")
+    csv_buffer.seek(0)
+    s3.put_object(Bucket=bucket_name, Key=key, Body=csv_buffer.getvalue())
+
 # Función para cargar un archivo en S3
 def upload_file_to_s3(file, filename, original_filename):
     try:
         s3.upload_fileobj(file, bucket_name, filename)
         st.success(f"Archivo '{original_filename}' subido exitosamente.")
+        return True
     except Exception as e:
         st.error(f"Error al subir el archivo: {e}")
+        return False
 
 # Función para guardar errores en un archivo log en S3
 def log_error_to_s3(error_message, filename):
@@ -37,14 +84,22 @@ def log_error_to_s3(error_message, filename):
             "Error": error_message,
             "NombreArchivo": filename
         }])
-        
+
         # Descargar el archivo log existente si existe
         try:
             log_obj = s3.get_object(Bucket=bucket_name, Key=log_filename)
-            log_df = pd.read_csv(BytesIO(log_obj['Body'].read()))
+            try:
+                log_df = pd.read_csv(BytesIO(log_obj['Body'].read()))
+            except Exception:
+                # Si el archivo existe pero está corrupto o vacío, reiniciamos
+                log_df = pd.DataFrame(columns=["Fecha", "Hora", "Error", "NombreArchivo"])
             log_df = pd.concat([log_df, log_entry], ignore_index=True)
-        except s3.exceptions.NoSuchKey:
-            log_df = log_entry  # Crear un nuevo DataFrame si no existe el archivo
+        except ClientError as e:
+            code = e.response.get("Error", {}).get("Code")
+            if code in ("NoSuchKey", "404", "NoSuchBucket"):
+                log_df = log_entry  # Crear nuevo si no existe
+            else:
+                raise
 
         # Subir el archivo log actualizado
         csv_buffer = BytesIO()
@@ -473,34 +528,74 @@ def validate_update_dates(data, filename, sheet_name):
         return False
 
 # Función para verificar duplicados en S3
-def check_for_duplicates(cuil, fecha, leader_name):
+def check_for_duplicates(cuils, fecha_normalizada, leader_name):
+    """
+    Verifica duplicados consultando el índice del período para una lista de CUILs.
+    Devuelve:
+        (is_duplicate: bool, conflicts: list[(cuil, existing_leader)])
+    Bloquea si algún CUIL ya fue cargado por OTRO líder en el mismo período.
+    """
     try:
-        cuil = str(cuil)
-        # Normalizar la fecha a "01-MM-YYYY" para buscar en la carpeta correcta
-        fecha_carpeta = normalize_fecha_to_first_day(fecha)
-        prefix = f"{fecha_carpeta}/"
-        response = s3.list_objects_v2(Bucket=bucket_name, Prefix=prefix)
-        if 'Contents' in response:
-            for obj in response['Contents']:
-                obj_key = obj['Key']
-                obj_data = s3.get_object(Bucket=bucket_name, Key=obj_key)
-                try:
-                    df = pd.read_csv(BytesIO(obj_data['Body'].read()))
-                except Exception:
-                    # Si el archivo no es un CSV válido, lo ignora
-                    continue
-                if df.empty or 'CUIL' not in df.columns or 'Fecha_Nombre_Archivo' not in df.columns:
-                    continue
-                df['CUIL'] = df['CUIL'].astype(str)
-                df['Fecha_Nombre_Archivo'] = df['Fecha_Nombre_Archivo'].astype(str)
-                if not df.empty and df['CUIL'].str.contains(cuil).any() and df['Fecha_Nombre_Archivo'].str.contains(fecha).any():
-                    existing_leader = df.loc[df['CUIL'] == cuil, 'Nombre Lider'].values[0]
-                    if existing_leader != leader_name:
-                        return True, existing_leader, cuil  # Block upload if the leader is different
-        return False, None, None
+        periodo = normalize_fecha_to_first_day(fecha_normalizada)  # '01-mm-aaaa'
+        idx_df = _load_period_index(periodo)
+
+        if idx_df.empty:
+            return False, []  # no hay índice -> no hay conflictos
+
+        conflicts = []
+        # normalizo a str para evitar problemas de comparación
+        idx_df["CUIL"] = idx_df["CUIL"].astype(str)
+        cuils_str = [str(c) for c in cuils]
+
+        for c in cuils_str:
+            row = idx_df.loc[idx_df["CUIL"] == c]
+            if not row.empty:
+                existing_leader = (None if row["Lider"].isna().iloc[0]
+                                   else str(row["Lider"].iloc[0]))
+                if existing_leader and existing_leader != leader_name:
+                    conflicts.append((c, existing_leader))
+
+        return (len(conflicts) > 0), conflicts
     except Exception as e:
-        st.error(f"Error al verificar duplicados en S3: {e}")
-        return False, None, None
+        st.error(f"Error al verificar duplicados en índice del período: {e}")
+        return False, []
+
+def _update_period_index_with_upload(periodo_str, cuils, leader_name):
+    """
+    Agrega todos los CUILs al índice '<Periodo>/indice.csv' en una sola operación:
+    - Si el CUIL no existe: se agrega (Periodo, CUIL, Lider).
+    - Si existe con el mismo líder: no hace nada.
+    - Si existe con OTRO líder: no lo pisa (esto ya debería haberse bloqueado antes).
+    """
+    try:
+        df = _load_period_index(periodo_str)
+        df["CUIL"] = df["CUIL"].astype(str) if "CUIL" in df.columns and not df.empty else df.get("CUIL", pd.Series(dtype=str))
+
+        to_add = []
+        cuils_str = [str(c) for c in cuils]
+
+        for c in cuils_str:
+            if not df.empty and "CUIL" in df.columns:
+                mask = df["CUIL"] == c
+            else:
+                mask = pd.Series([], dtype=bool)
+
+            if mask.any():
+                existing_leader = str(df.loc[mask, "Lider"].iloc[0]) if not df.loc[mask, "Lider"].isna().iloc[0] else None
+                if existing_leader == leader_name:
+                    continue  # ya está con el mismo líder
+                else:
+                    # existe con otro líder -> no se sobreescribe (ya fue validado)
+                    continue
+            else:
+                to_add.append({"Periodo": periodo_str, "CUIL": c, "Lider": leader_name})
+
+        if to_add:
+            df = pd.concat([df, pd.DataFrame(to_add)], ignore_index=True)
+
+        _save_period_index(df, periodo_str)
+    except Exception as e:
+        st.error(f"Error al actualizar el índice del período: {e}")
 
 # Función para procesar y subir el Excel
 def process_and_upload_excel(file, original_filename):
@@ -535,24 +630,30 @@ def process_and_upload_excel(file, original_filename):
             log_error_to_s3(error_message, original_filename)
             return
 
-        # Verificar duplicados
-        cuil = cleaned_df['CUIL'].iloc[0]
-        fecha, _ = extract_date_and_sucursal(original_filename)
-        fecha_normalizada = normalize_fecha_to_first_day(fecha)
+        # ===== CUILs únicos del archivo =====
+        unique_cuils = cleaned_df['CUIL'].astype(str).unique().tolist()
+        fecha_archivo = original_filename.split('+')[0]                # ej: '03-04-2025'
+        periodo_str = normalize_fecha_to_first_day(fecha_archivo)      # ej: '01-04-2025'
         leader_name = cleaned_df['Nombre Lider'].iloc[0]
-        is_duplicate, existing_leader, duplicate_cuil = check_for_duplicates(cuil, fecha_normalizada, leader_name)
+
+        # Verificar duplicados usando ÍNDICE DEL PERÍODO para TODOS los CUILs
+        is_duplicate, conflicts = check_for_duplicates(unique_cuils, periodo_str, leader_name)
         if is_duplicate:
-            error_message = f"No se puede subir el archivo porque el líder '{existing_leader}' ya lo subió anteriormente. El CUIL duplicado es '{duplicate_cuil}'."
+            conflictos_txt = "\n".join([f"- CUIL {cuil} ya subido por '{lider}'" for cuil, lider in conflicts])
+            error_message = (
+                "No se puede subir el archivo porque existen CUILs ya cargados por otro líder en el período:\n"
+                f"{conflictos_txt}"
+            )
             st.error(error_message)
             log_error_to_s3(error_message, original_filename)
             return
 
-        # Contar la cantidad de CUILs únicos
-        unique_cuils_count = cleaned_df['CUIL'].nunique()
+        # Contar CUILs únicos (tableros)
+        unique_cuils_count = len(unique_cuils)
         st.info(f"Se subieron {unique_cuils_count} tableros.")
 
         upload_datetime_obj = datetime.strptime(upload_datetime, '%d/%m/%Y_%H:%M:%S')
-        tablero_type = determine_tablero_type(fecha, upload_datetime_obj)
+        tablero_type = determine_tablero_type(fecha_archivo, upload_datetime_obj)
         ajuste_value = "SI" if tablero_type == "Ajuste" else "NO"
         cleaned_df["Ajuste"] = ajuste_value
 
@@ -566,16 +667,22 @@ def process_and_upload_excel(file, original_filename):
             if not guardar:
                 return
 
-        # Extraer la fecha del archivo (ej: "03-04-2025" o "01-04-2025")
-        fecha_archivo = original_filename.split('+')[0]
-        fecha_carpeta = normalize_fecha_to_first_day(fecha_archivo)
+        # Armado ruta destino del CSV limpio
+        fecha_carpeta = periodo_str  # ya normalizada a '01-mm-aaaa'
         csv_filename = f"{fecha_carpeta}/{now.strftime('%Y-%m-%d_%H-%M-%S')}_{original_filename.split('.')[0]}.csv"
 
+        # Subir CSV limpio a S3
         csv_buffer = BytesIO()
         cleaned_df.to_csv(csv_buffer, index=False, encoding="utf-8-sig")
-
         csv_buffer.seek(0)
-        upload_file_to_s3(csv_buffer, csv_filename, original_filename)
+        ok = upload_file_to_s3(csv_buffer, csv_filename, original_filename)
+        if not ok:
+            # Si falló la subida del CSV, no toco el índice
+            return
+
+        # ✅ Actualizar índice del período con TODOS los CUILs subidos
+        _update_period_index_with_upload(periodo_str, unique_cuils, leader_name)
+
     except Exception as e:
         error_message = f"Error al procesar el archivo Excel: {e}"
         st.error(error_message)
@@ -601,11 +708,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
-
