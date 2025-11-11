@@ -606,11 +606,11 @@ def process_and_upload_excel(file, original_filename):
             log_error_to_s3(error_message, original_filename)
             return
 
-        # if not validate_file_date(original_filename):
-        #     error_message = "La fecha del nombre del archivo solo puede ser de un mes anterior, o de dos meses atrás (hasta el día 10)."
-        #     st.error(error_message)
-        #     log_error_to_s3(error_message, original_filename)
-        #     return
+        if not validate_file_date(original_filename):
+            error_message = "La fecha del nombre del archivo solo puede ser de un mes anterior, o de dos meses atrás (hasta el día 10)."
+            st.error(error_message)
+            log_error_to_s3(error_message, original_filename)
+            return
 
         excel_data = pd.ExcelFile(file)
         argentina_tz = pytz.timezone("America/Argentina/Buenos_Aires")
