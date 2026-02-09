@@ -9,6 +9,9 @@ from config import cargar_configuracion
 from botocore.exceptions import ClientError
 from pandas.errors import EmptyDataError
 
+import streamlit as st
+st.write("VERSIÓN EN PRODUCCIÓN: app.py")
+
 # Cargar configuración
 aws_access_key, aws_secret_key, region_name, bucket_name, valid_user, valid_password = cargar_configuracion()
 
@@ -708,3 +711,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
