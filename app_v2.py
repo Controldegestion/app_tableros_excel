@@ -210,6 +210,52 @@ def parse_percent_optional(value):
     # Tipo raro
     return "INVALID"
 
+def parse_udig(value):
+    """
+    Parser específico para UDIG:
+    - Si viene como número desde Excel:
+        * 0.8 (80%) o 1.6 (160%) => se respeta tal cual
+        * 80 o 160 => se divide por 100
+    - Si viene como texto:
+        * '80%' o '160%' => divide por 100
+        * '0.8' o '1.6' => se respeta
+        * '80' o '160' => divide por 100
+    """
+    if pd.isna(value):
+        return None
+
+    # Si viene como número (lo típico al leer Excel)
+    if isinstance(value, (int, float)):
+        val = float(value)
+        # 0.8 y 1.6 ya son ratios correctos para UDIG
+        if 0 <= val <= 3:
+            return val
+        # 80, 160, etc. (sin formato %) => lo paso a ratio
+        return val / 100
+
+    # Si viene como texto
+    if isinstance(value, str):
+        s = value.strip().replace(",", ".")
+        if s == "":
+            return None
+
+        if s.endswith("%"):
+            s_num = s.rstrip("%").strip()
+            try:
+                return float(s_num) / 100
+            except:
+                return "INVALID"
+
+        try:
+            val = float(s)
+            if 0 <= val <= 3:
+                return val
+            return val / 100
+        except:
+            return "INVALID"
+
+    return "INVALID"
+
 
 def extract_udig_from_form(sheet_data, sheet_name, filename):
     """
@@ -231,7 +277,7 @@ def extract_udig_from_form(sheet_data, sheet_name, filename):
         if label_norm != "UDIG":
             return None  # no hay UDIG en esa posición
 
-        parsed = parse_percent_optional(value)
+        parsed = parse_udig(value)
 
         if parsed is None:
             st.warning(f"UDIG detectado (A5='UDIG') pero B5 está vacío en hoja '{sheet_name}'. Se cargará sin UDIG.")
@@ -802,5 +848,6 @@ def main():
 if __name__ == "__main__":
 
     main()
+
 
 
