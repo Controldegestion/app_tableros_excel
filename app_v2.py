@@ -9,6 +9,8 @@ from config import cargar_configuracion
 from botocore.exceptions import ClientError
 from pandas.errors import EmptyDataError
 
+st.write("RUNNING FILE:", __file__)
+
 # Cargar configuración
 aws_access_key, aws_secret_key, region_name, bucket_name, valid_user, valid_password = cargar_configuracion()
 
@@ -848,6 +850,7 @@ def main():
 if __name__ == "__main__":
 
     main()
+
 
 
 
