@@ -271,7 +271,6 @@ def extract_udig_from_form(sheet_data, sheet_name, filename):
         label = sheet_data.iloc[4, 0]  # A5 (fila 5, col A=0)
         value = sheet_data.iloc[4, 1]  # B5
 
-        st.write(f"[DEBUG UDIG] sheet={sheet_name} | A5={label} ({type(label)}) | B5={value} ({type(value)})")
 
         # Normalizar label
         label_norm = ""
@@ -283,7 +282,6 @@ def extract_udig_from_form(sheet_data, sheet_name, filename):
 
         parsed = parse_udig(value)
 
-        st.write(f"[DEBUG UDIG] parsed={parsed}")
 
         if parsed is None:
             st.warning(f"UDIG detectado (A5='UDIG') pero B5 está vacío en hoja '{sheet_name}'. Se cargará sin UDIG.")
@@ -844,7 +842,7 @@ def normalize_fecha_to_first_day(fecha_str):
 # Función principal de la aplicación
 def main():
     st.title("Gestión de Tableros")
-    st.write("APP_VERSION:", APP_VERSION)
+    st.caption(f"Versión: {APP_VERSION}")
 
     st.header("Sube un Tablero")
     uploaded_file = st.file_uploader("Selecciona un archivo Excel", type=["xlsx"])
@@ -855,6 +853,7 @@ def main():
 if __name__ == "__main__":
 
     main()
+
 
 
 
